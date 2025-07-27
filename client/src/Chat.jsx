@@ -1,20 +1,22 @@
-import {useContext, useEffect, useRef, useState} from "react";
+import { useContext, useEffect, useRef, useState } from "react";
 import Avatar from "./Avatar";
 import Logo from "./Logo";
-import {UserContext} from "./UserContext.jsx";
-import {uniqBy} from "lodash";
+import { UserContext } from "./UserContext.jsx";
+import { uniqBy } from "lodash";
 import axios from "axios";
 import Contact from "./Contact";
 
 export default function Chat() {
-  const [ws,setWs] = useState(null);
-  const [onlinePeople,setOnlinePeople] = useState({});
-  const [offlinePeople,setOfflinePeople] = useState({});
-  const [selectedUserId,setSelectedUserId] = useState(null);
-  const [newMessageText,setNewMessageText] = useState('');
-  const [messages,setMessages] = useState([]);
-  const {username,id,setId,setUsername} = useContext(UserContext);
+  const [ws, setWs] = useState(null);
+  const [onlinePeople, setOnlinePeople] = useState({});
+  const [offlinePeople, setOfflinePeople] = useState({});
+  const [selectedUserId, setSelectedUserId] = useState(null);
+  const [newMessageText, setNewMessageText] = useState('');
+  const [messages, setMessages] = useState([]);
+  const [typingUser, setTypingUser] = useState(null);
+  const { username, id, setId, setUsername } = useContext(UserContext);
   const divUnderMessages = useRef();
+  let typingTimeout = useRef(null);
 
   useEffect(() => {
     connectToWs();
@@ -34,7 +36,7 @@ export default function Chat() {
 
   function showOnlinePeople(peopleArray) {
     const people = {};
-    peopleArray.forEach(({userId,username}) => {
+    peopleArray.forEach(({ userId, username }) => {
       people[userId] = username;
     });
     setOnlinePeople(people);
@@ -42,12 +44,17 @@ export default function Chat() {
 
   function handleMessage(ev) {
     const messageData = JSON.parse(ev.data);
-    console.log({ev,messageData});
+    console.log({ ev, messageData });
+
     if ('online' in messageData) {
       showOnlinePeople(messageData.online);
+    } else if (messageData.type === 'typing' && messageData.from === selectedUserId) {
+      setTypingUser(messageData.username);
+    } else if (messageData.type === 'stop-typing' && messageData.from === selectedUserId) {
+      setTypingUser(null);
     } else if ('text' in messageData) {
       if (messageData.sender === selectedUserId) {
-        setMessages(prev => ([...prev, {...messageData}]));
+        setMessages(prev => ([...prev, { ...messageData }]));
       }
     }
   }
@@ -67,19 +74,26 @@ export default function Chat() {
       text: newMessageText,
       file,
     }));
+
     if (file) {
-      axios.get('/messages/'+selectedUserId).then(res => {
+      axios.get('/messages/' + selectedUserId).then(res => {
         setMessages(res.data);
       });
     } else {
       setNewMessageText('');
-      setMessages(prev => ([...prev,{
+      setMessages(prev => ([...prev, {
         text: newMessageText,
         sender: id,
         recipient: selectedUserId,
         _id: Date.now(),
       }]));
     }
+
+    ws.send(JSON.stringify({
+      type: 'stop-typing',
+      to: selectedUserId,
+      from: id
+    }));
   }
 
   function sendFile(ev) {
@@ -93,12 +107,38 @@ export default function Chat() {
     };
   }
 
+  function handleTyping() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) return;
+
+    ws.send(JSON.stringify({
+      type: 'typing',
+      to: selectedUserId,
+      from: id,
+      username
+    }));
+
+    clearTimeout(typingTimeout.current);
+    typingTimeout.current = setTimeout(() => {
+      ws.send(JSON.stringify({
+        type: 'stop-typing',
+        to: selectedUserId,
+        from: id
+      }));
+    }, 1000);
+  }
+
+  const handleMessageInputChange = (e) => {
+    setNewMessageText(e.target.value);
+    handleTyping();
+  };
+
+  // ✅ Updated scroll effect to include typingUser
   useEffect(() => {
     const div = divUnderMessages.current;
     if (div) {
-      div.scrollIntoView({behavior:'smooth', block:'end'});
+      div.scrollIntoView({ behavior: 'smooth', block: 'end' });
     }
-  }, [messages]);
+  }, [messages, typingUser]);
 
   useEffect(() => {
     axios.get('/people').then(res => {
@@ -115,13 +155,13 @@ export default function Chat() {
 
   useEffect(() => {
     if (selectedUserId) {
-      axios.get('/messages/'+selectedUserId).then(res => {
+      axios.get('/messages/' + selectedUserId).then(res => {
         setMessages(res.data);
       });
     }
   }, [selectedUserId]);
 
-  const onlinePeopleExclOurUser = {...onlinePeople};
+  const onlinePeopleExclOurUser = { ...onlinePeople };
   delete onlinePeopleExclOurUser[id];
 
   const messagesWithoutDupes = uniqBy(messages, '_id');
@@ -137,7 +177,7 @@ export default function Chat() {
               id={userId}
               online={true}
               username={onlinePeopleExclOurUser[userId]}
-              onClick={() => {setSelectedUserId(userId);console.log({userId})}}
+              onClick={() => { setSelectedUserId(userId); console.log({ userId }) }}
               selected={userId === selectedUserId} />
           ))}
           {Object.keys(offlinePeople).map(userId => (
@@ -171,10 +211,10 @@ export default function Chat() {
           )}
           {!!selectedUserId && (
             <div className="relative h-full">
-              <div className="overflow-y-scroll absolute top-0 left-0 right-0 bottom-2">
+              <div className="overflow-y-scroll absolute top-0 left-0 right-0 bottom-2 pr-2">
                 {messagesWithoutDupes.map(message => (
-                  <div key={message._id} className={(message.sender === id ? 'text-right': 'text-left')}>
-                    <div className={"text-left inline-block p-2 my-2 rounded-md text-sm " +(message.sender === id ? 'bg-blue-500 text-white dark:bg-blue-600':'bg-white text-gray-500 dark:bg-gray-700 dark:text-gray-100')}>
+                  <div key={message._id} className={(message.sender === id ? 'text-right' : 'text-left')}>
+                    <div className={"text-left inline-block p-2 my-2 rounded-md text-sm " + (message.sender === id ? 'bg-blue-500 text-white dark:bg-blue-600' : 'bg-white text-gray-500 dark:bg-gray-700 dark:text-gray-100')}>
                       {message.text}
                       {message.file && (
                         <div className="">
@@ -189,6 +229,13 @@ export default function Chat() {
                     </div>
                   </div>
                 ))}
+
+                {typingUser && (
+                  <div className="text-sm text-blue-400 italic px-2 pb-1 animate-pulse">
+                    {typingUser} is typing...
+                  </div>
+                )}
+
                 <div ref={divUnderMessages}></div>
               </div>
             </div>
@@ -197,10 +244,10 @@ export default function Chat() {
         {!!selectedUserId && (
           <form className="flex gap-2" onSubmit={sendMessage}>
             <input type="text"
-                   value={newMessageText}
-                   onChange={ev => setNewMessageText(ev.target.value)}
-                   placeholder="Type your message here"
-                   className="bg-white dark:bg-gray-700 dark:text-white flex-grow border rounded-sm p-2"/>
+              value={newMessageText}
+              onChange={handleMessageInputChange}
+              placeholder="Type your message here"
+              className="bg-white dark:bg-gray-700 dark:text-white flex-grow border rounded-sm p-2" />
             <label className="bg-blue-200 dark:bg-gray-600 p-2 text-gray-600 dark:text-gray-200 cursor-pointer rounded-sm border border-blue-200 dark:border-gray-600">
               <input type="file" className="hidden" onChange={sendFile} />
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" className="w-6 h-6">
@@ -217,4 +264,4 @@ export default function Chat() {
       </div>
     </div>
   );
-} 
+}

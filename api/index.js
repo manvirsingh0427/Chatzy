@@ -26,7 +26,7 @@ const bcryptSalt = bcrypt.genSaltSync(10);
 
 const app = express();
 
-// ✅ Helmet with relaxed Content-Security-Policy
+// Helmet with relaxed Content-Security-Policy
 app.use(
   helmet({
     contentSecurityPolicy: {
@@ -42,13 +42,9 @@ app.use(
   })
 );
 
-// ✅ Serve uploaded files statically
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-// ✅ Dummy favicon handler (to avoid 404)
 app.get('/favicon.ico', (req, res) => res.status(204));
 
-// ✅ Middleware
 app.use(express.json());
 app.use(cookieParser());
 app.use(cors({
@@ -70,8 +66,7 @@ async function getUserDataFromRequest(req) {
   });
 }
 
-// ✅ Routes
-
+// Routes
 app.get('/test', (req, res) => res.json('test ok'));
 
 app.get('/people', async (req, res) => {
@@ -106,10 +101,7 @@ app.post('/register', async (req, res) => {
   const { username, password } = req.body;
   try {
     const hashedPassword = bcrypt.hashSync(password, bcryptSalt);
-    const createdUser = await User.create({
-      username,
-      password: hashedPassword,
-    });
+    const createdUser = await User.create({ username, password: hashedPassword });
     jwt.sign({ userId: createdUser._id, username }, jwtSecret, {}, (err, token) => {
       if (err) throw err;
       res.cookie('token', token, {
@@ -149,12 +141,11 @@ app.post('/logout', (req, res) => {
   }).json('ok');
 });
 
-// ✅ Start Server
 const server = app.listen(4040, () => {
   console.log('✅ Server running on http://localhost:4040');
 });
 
-// ✅ WebSocket Setup
+// WebSocket Setup
 const wss = new ws.WebSocketServer({ server });
 
 wss.on('connection', (connection, req) => {
@@ -201,22 +192,63 @@ wss.on('connection', (connection, req) => {
   }
 
   connection.on('message', async (message) => {
-    const messageData = JSON.parse(message.toString());
-    const { recipient, text, file } = messageData;
-    let filename = null;
+  let messageData;
+  try {
+    messageData = JSON.parse(message.toString());
+  } catch (err) {
+    console.error('❌ Invalid JSON:', message.toString());
+    return;
+  }
 
-    if (file) {
+  const { recipient, text, file, type, isTyping, to, from, username } = messageData;
+
+  // ✅ Handle typing event
+  if (type === 'typing' && to) {
+    [...wss.clients]
+      .filter(c => c.userId === to)
+      .forEach(c =>
+        c.send(JSON.stringify({
+          type: 'typing',
+          from,
+          username,
+        }))
+      );
+    return;
+  }
+
+  // ✅ Handle stop-typing event
+  if (type === 'stop-typing' && to) {
+    [...wss.clients]
+      .filter(c => c.userId === to)
+      .forEach(c =>
+        c.send(JSON.stringify({
+          type: 'stop-typing',
+          from,
+        }))
+      );
+    return;
+  }
+
+  // ✅ File saving logic
+  let filename = null;
+  if (file?.data && file?.name) {
+    try {
       const parts = file.name.split('.');
       const ext = parts[parts.length - 1];
       filename = Date.now() + '.' + ext;
       const filePath = path.join(__dirname, 'uploads', filename);
       const bufferData = Buffer.from(file.data.split(',')[1], 'base64');
       fs.writeFile(filePath, bufferData, () => {
-        console.log('📁 file saved:', filePath);
+        console.log('📁 File saved:', filePath);
       });
+    } catch (err) {
+      console.error('❌ File saving error:', err);
     }
+  }
 
-    if (recipient && (text || file)) {
+  // ✅ Save and send chat message
+  if (recipient && (text || file)) {
+    try {
       const messageDoc = await Message.create({
         sender: connection.userId,
         recipient,
@@ -227,13 +259,18 @@ wss.on('connection', (connection, req) => {
       [...wss.clients]
         .filter(c => c.userId === recipient)
         .forEach(c => c.send(JSON.stringify({
+          type: 'message',
           text,
           sender: connection.userId,
           recipient,
           file: file ? filename : null,
           _id: messageDoc._id,
         })));
+    } catch (err) {
+      console.error('❌ Message DB error:', err);
     }
+  }
+
   });
 
   notifyAboutOnlinePeople();
